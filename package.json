@@ -1,0 +1,45 @@
+{
+  "name": "claude-code-switcher",
+  "version": "1.1.0",
+  "description": "A CLI tool for quickly switching Claude Code environment configurations with connectivity testing",
+  "main": "index.js",
+  "bin": {
+    "claude-config": "./bin/claude-config.js",
+    "cc": "./bin/claude-config.js"
+  },
+  "scripts": {
+    "start": "node bin/claude-config.js",
+    "install-global": "npm install -g .",
+    "uninstall-global": "npm uninstall -g claude-code-switcher"
+  },
+  "keywords": [
+    "claude",
+    "config",
+    "environment",
+    "cli",
+    "anthropic",
+    "switcher",
+    "connectivity",
+    "api"
+  ],
+  "author": "INK-Q",
+  "license": "MIT",
+  "dependencies": {
+    "inquirer": "^8.2.6",
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0",
+    "fs-extra": "^11.2.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/INK-Q/claude-code-switcher.git"
+  },
+  "homepage": "https://github.com/INK-Q/claude-code-switcher#readme",
+  "bugs": {
+    "url": "https://github.com/INK-Q/claude-code-switcher/issues"
+  },
+  "preferGlobal": true
+}
