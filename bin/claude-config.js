@@ -8,10 +8,15 @@ const path = require('path');
 const os = require('os');
 const https = require('https');
 const http = require('http');
+const clipboardy = require('clipboardy');
 
 // Config file paths
 const CONFIG_DIR = path.join(os.homedir(), '.claude-config');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'configs.json');
+
+// Claude Code global config paths
+const CLAUDE_CODE_CONFIG_DIR = path.join(os.homedir(), '.claude');
+const CLAUDE_CODE_SETTINGS_FILE = path.join(CLAUDE_CODE_CONFIG_DIR, 'settings.json');
 
 // Default configurations
 const DEFAULT_CONFIGS = {
@@ -164,6 +169,78 @@ async function initConfig() {
   }
 }
 
+// Load Claude Code configuration
+async function loadClaudeCodeConfig() {
+  try {
+    if (!await fs.pathExists(CLAUDE_CODE_SETTINGS_FILE)) {
+      return null;
+    }
+    return await fs.readJson(CLAUDE_CODE_SETTINGS_FILE);
+  } catch (error) {
+    console.error(chalk.red('✗ Failed to load Claude Code settings:'), error.message);
+    return null;
+  }
+}
+
+// Save Claude Code configuration
+async function saveClaudeCodeConfig(config) {
+  try {
+    await fs.ensureDir(CLAUDE_CODE_CONFIG_DIR);
+    await fs.writeJson(CLAUDE_CODE_SETTINGS_FILE, config, { spaces: 2 });
+    return true;
+  } catch (error) {
+    console.error(chalk.red('✗ Failed to save Claude Code settings:'), error.message);
+    return false;
+  }
+}
+
+// Update Claude Code environment variables
+async function updateClaudeCodeConfig(baseUrl, authToken) {
+  const claudeSettings = await loadClaudeCodeConfig();
+  
+  if (!claudeSettings) {
+    console.log(chalk.yellow('⚠ Claude Code settings not found, creating new configuration...'));
+    const newSettings = {
+      env: {
+        ANTHROPIC_BASE_URL: baseUrl,
+        ANTHROPIC_AUTH_TOKEN: authToken,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1,
+        DISABLE_TELEMETRY: 1
+      }
+    };
+    
+    const saved = await saveClaudeCodeConfig(newSettings);
+    if (saved) {
+      console.log(chalk.green('✓ Claude Code settings created and updated'));
+    }
+    return saved;
+  }
+  
+  // Update existing settings
+  if (!claudeSettings.env) {
+    claudeSettings.env = {};
+  }
+  
+  claudeSettings.env.ANTHROPIC_BASE_URL = baseUrl;
+  claudeSettings.env.ANTHROPIC_AUTH_TOKEN = authToken;
+  
+  // Add privacy/performance settings if not present
+  if (!claudeSettings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+    claudeSettings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = 1;
+  }
+  if (!claudeSettings.env.DISABLE_TELEMETRY) {
+    claudeSettings.env.DISABLE_TELEMETRY = 1;
+  }
+  
+  const saved = await saveClaudeCodeConfig(claudeSettings);
+  if (saved) {
+    console.log(chalk.green('✓ Claude Code global settings updated'));
+    console.log(chalk.gray(`Settings file: ${CLAUDE_CODE_SETTINGS_FILE}`));
+  }
+  
+  return saved;
+}
+
 // Load configurations
 async function loadConfigs() {
   try {
@@ -177,151 +254,102 @@ async function loadConfigs() {
   }
 }
 
-// Set environment variable (Windows)
-function setWindowsEnvVar(name, value) {
+
+// Clear environment variable (Windows)
+function clearWindowsEnvVar(name) {
   const { execSync } = require('child_process');
   try {
-    // Set user-level environment variable
-    execSync(`setx ${name} "${value}"`, { encoding: 'utf8' });
-    // Set current process environment variable
-    process.env[name] = value;
+    // Remove user-level environment variable using PowerShell (more reliable)
+    const psCommand = `Remove-ItemProperty -Path 'HKCU:\\Environment' -Name '${name}' -ErrorAction SilentlyContinue`;
+    execSync(`powershell -Command "${psCommand}"`, { encoding: 'utf8', stdio: 'pipe' });
+    
+    // Also try the old reg delete method as backup
+    try {
+      execSync(`powershell -Command "& {[Environment]::SetEnvironmentVariable('${name}', $null, 'User')}"`, 
+               { encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) {
+      // Ignore errors from backup method
+    }
+    
+    // Clear current process environment variable
+    delete process.env[name];
+    
+    // Broadcast environment change to notify other processes
+    try {
+      execSync(`powershell -Command "& {Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Win32 { [DllImport(\\"user32.dll\\", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult); }'; $HWND_BROADCAST = [IntPtr]0xffff; $WM_SETTINGCHANGE = 0x1a; $result = [UIntPtr]::Zero; [Win32]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)}"`, 
+               { encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) {
+      // Broadcast might fail, but that's okay
+    }
+    
     return true;
   } catch (error) {
-    console.error(chalk.red(`✗ Failed to set env var: ${name}`), error.message);
-    return false;
+    // Clear current process environment variable anyway
+    delete process.env[name];
+    console.log(chalk.yellow(`⚠ Failed to remove ${name} from registry, but cleared from current session`));
+    return true;
   }
 }
 
-// Set environment variable (Unix/Linux/macOS)
-function setUnixEnvVar(name, value) {
+// Clear environment variable (Unix/Linux/macOS) 
+function clearUnixEnvVar(name) {
   const { execSync } = require('child_process');
   const shell = process.env.SHELL || '/bin/bash';
   const shellConfig = shell.includes('zsh') ? '~/.zshrc' : '~/.bashrc';
   
   try {
-    // Set current process environment variable
-    process.env[name] = value;
+    // Clear current process environment variable
+    delete process.env[name];
     
-    // Add to shell config file
-    const exportLine = `export ${name}="${value}"`;
-    execSync(`echo '${exportLine}' >> ${shellConfig}`, { encoding: 'utf8' });
+    // Remove from shell config file (remove export lines)
+    const sedCommand = shell.includes('zsh') ? 
+      `sed -i '' '/^export ${name}=/d' ~/.zshrc` :
+      `sed -i '/^export ${name}=/d' ~/.bashrc`;
     
-    console.log(chalk.yellow(`Added to ${shellConfig}, please reload terminal or run: source ${shellConfig}`));
+    execSync(sedCommand, { encoding: 'utf8', stdio: 'pipe' });
+    
+    console.log(chalk.yellow(`Removed from ${shellConfig}, please reload terminal or run: source ${shellConfig}`));
     return true;
   } catch (error) {
-    console.error(chalk.red(`✗ Failed to set env var: ${name}`), error.message);
+    // Clear current process environment variable anyway
+    delete process.env[name];
+    console.log(chalk.yellow(`Cleared from current session, manual cleanup may be needed for ${shellConfig}`));
+    return true;
+  }
+}
+
+// Cross-platform clear environment variable
+function clearEnvVar(name) {
+  if (os.platform() === 'win32') {
+    return clearWindowsEnvVar(name);
+  } else {
+    return clearUnixEnvVar(name);
+  }
+}
+
+// Clear both environment variables
+function clearBothEnvVars() {
+  const success1 = clearEnvVar('ANTHROPIC_BASE_URL');
+  const success2 = clearEnvVar('ANTHROPIC_AUTH_TOKEN');
+  
+  if (success1 && success2) {
+    console.log(chalk.green('✓ Environment variables cleared from system registry'));
+    console.log(chalk.blue('ℹ Configuration will now be read from Claude Code settings.json'));
+    
+    if (os.platform() === 'win32') {
+      console.log(chalk.yellow('⚠ Windows Note: New terminals will use the cleared values immediately.'));
+      console.log(chalk.yellow('   Current terminal may still show old values until restarted.'));
+    }
+    
+    return true;
+  } else {
+    console.log(chalk.yellow('⚠ Environment variable clearing partially failed'));
     return false;
   }
 }
 
-// Cross-platform set environment variable
-function setEnvVar(name, value) {
-  if (os.platform() === 'win32') {
-    return setWindowsEnvVar(name, value);
-  } else {
-    return setUnixEnvVar(name, value);
-  }
-}
-
-// Execute temporary environment variable commands and show instructions
-async function applyTempCommands(baseUrl, token) {
-  const { execSync } = require('child_process');
-  
-  // Set for current process (immediate effect for current session)
-  process.env.ANTHROPIC_BASE_URL = baseUrl;
-  process.env.ANTHROPIC_AUTH_TOKEN = token;
-  
-  console.log(chalk.cyan('\n💡 Environment variables updated for:'));
-  console.log(chalk.green('✓ Current CLI session (immediate effect)'));
-  
-  // Detect current shell and generate script file for parent terminal
-  const tempDir = os.tmpdir();
-  const timestamp = Date.now();
-  
-  if (os.platform() === 'win32') {
-    // Windows - detect terminal type and create appropriate script
-    const isPS = process.env.PSModulePath; // PowerShell indicator
-    const isCMD = !isPS && process.env.COMSPEC; // CMD indicator
-    
-    if (isPS) {
-      // PowerShell script
-      const psScript = `
-$env:ANTHROPIC_BASE_URL="${baseUrl}"
-$env:ANTHROPIC_AUTH_TOKEN="${token}"
-Write-Host "✓ Environment variables updated for PowerShell" -ForegroundColor Green
-`;
-      const psPath = path.join(tempDir, `claude_env_${timestamp}.ps1`);
-      await fs.writeFile(psPath, psScript);
-      
-      console.log(chalk.green('✓ PowerShell environment update available'));
-      console.log(chalk.gray(`To apply in current terminal, run:`));
-      console.log(chalk.yellow(`& "${psPath}"`));
-      
-    } else {
-      // CMD or other - create batch file
-      const batScript = `@echo off
-set ANTHROPIC_BASE_URL=${baseUrl}
-set ANTHROPIC_AUTH_TOKEN=${token}
-echo ✓ Environment variables updated for CMD
-`;
-      const batPath = path.join(tempDir, `claude_env_${timestamp}.bat`);
-      await fs.writeFile(batPath, batScript);
-      
-      console.log(chalk.green('✓ CMD environment update available'));
-      console.log(chalk.gray(`To apply in current terminal, run:`));
-      console.log(chalk.yellow(`"${batPath}"`));
-    }
-    
-    // Also show manual commands as backup
-    console.log(chalk.cyan('\n📋 Or copy these commands manually:'));
-    console.log(chalk.white('PowerShell:'));
-    console.log(chalk.yellow(`$env:ANTHROPIC_BASE_URL="${baseUrl}"`));
-    console.log(chalk.yellow(`$env:ANTHROPIC_AUTH_TOKEN="${token}"`));
-    console.log(chalk.white('CMD:'));
-    console.log(chalk.yellow(`set ANTHROPIC_BASE_URL=${baseUrl}`));
-    console.log(chalk.yellow(`set ANTHROPIC_AUTH_TOKEN=${token}`));
-    
-  } else {
-    // Unix/Linux/macOS - create shell script
-    const shellScript = `#!/bin/bash
-export ANTHROPIC_BASE_URL="${baseUrl}"
-export ANTHROPIC_AUTH_TOKEN="${token}"
-echo "✓ Environment variables updated for current shell"
-`;
-    const shellPath = path.join(tempDir, `claude_env_${timestamp}.sh`);
-    await fs.writeFile(shellPath, shellScript);
-    await fs.chmod(shellPath, 0o755); // Make executable
-    
-    console.log(chalk.green('✓ Shell environment update available'));
-    console.log(chalk.gray(`To apply in current terminal, run:`));
-    console.log(chalk.yellow(`source "${shellPath}"`));
-    
-    // Also show manual commands
-    console.log(chalk.cyan('\n📋 Or copy this command manually:'));
-    console.log(chalk.yellow(`export ANTHROPIC_BASE_URL="${baseUrl}" ANTHROPIC_AUTH_TOKEN="${token}"`));
-  }
-  
-  // Clean up old temp files (older than 1 hour)
-  try {
-    const files = await fs.readdir(tempDir);
-    const oneHourAgo = Date.now() - 60 * 60 * 1000;
-    
-    for (const file of files) {
-      if (file.startsWith('claude_env_') && 
-          (file.endsWith('.ps1') || file.endsWith('.bat') || file.endsWith('.sh'))) {
-        const match = file.match(/claude_env_(\d+)/);
-        if (match && parseInt(match[1]) < oneHourAgo) {
-          await fs.unlink(path.join(tempDir, file)).catch(() => {}); // Ignore errors
-        }
-      }
-    }
-  } catch (error) {
-    // Ignore cleanup errors
-  }
-}
-
 // Switch configuration
-async function switchConfig(configName) {
+async function switchConfig(configName, options = {}) {
   const configs = await loadConfigs();
   
   if (!configs[configName]) {
@@ -334,30 +362,58 @@ async function switchConfig(configName) {
   console.log(chalk.blue(`\n🔄 Switching to config: ${configName}`));
   console.log(chalk.gray(`Description: ${config.description}`));
   
-  const success1 = setEnvVar('ANTHROPIC_BASE_URL', config.ANTHROPIC_BASE_URL);
-  const success2 = setEnvVar('ANTHROPIC_AUTH_TOKEN', config.ANTHROPIC_AUTH_TOKEN);
+  // Clear environment variables if requested
+  if (options.clearEnv) {
+    console.log(chalk.blue('🧹 Clearing system environment variables...'));
+    clearBothEnvVars();
+  }
   
-  if (success1 && success2) {
-    console.log(chalk.green('✓ Configuration switched successfully!'));
+  // Update Claude Code settings.json
+  const success = await updateClaudeCodeConfig(config.ANTHROPIC_BASE_URL, config.ANTHROPIC_AUTH_TOKEN);
+  
+  if (success) {
+    console.log(chalk.green('✓ Claude Code settings updated successfully!'));
     console.log(chalk.gray(`BASE_URL: ${config.ANTHROPIC_BASE_URL}`));
-    console.log(chalk.gray(`TOKEN: ${config.ANTHROPIC_AUTH_TOKEN.substring(0, 20)}...`));
+    console.log(chalk.gray(`AUTH_TOKEN: ${config.ANTHROPIC_AUTH_TOKEN.substring(0, 20)}...`));
+    console.log(chalk.blue('ℹ Configuration applied to Claude Code settings.json'));
     
-    // Apply temporary commands and show instructions
-    await applyTempCommands(config.ANTHROPIC_BASE_URL, config.ANTHROPIC_AUTH_TOKEN);
+    if (options.clearEnv) {
+      console.log(chalk.green('✓ Environment variables cleared - configuration will be read from settings.json'));
+    }
   } else {
-    console.log(chalk.red('✗ Configuration switch partially failed'));
+    console.log(chalk.red('✗ Failed to update Claude Code settings'));
   }
 }
 
 // Show current configuration
-function showCurrent() {
-  console.log(chalk.cyan('\n📋 Current Environment Variables:'));
-  console.log(chalk.white('ANTHROPIC_BASE_URL:'), chalk.green(process.env.ANTHROPIC_BASE_URL || 'Not set'));
-  console.log(chalk.white('ANTHROPIC_AUTH_TOKEN:'), chalk.green(
-    process.env.ANTHROPIC_AUTH_TOKEN ? 
-    process.env.ANTHROPIC_AUTH_TOKEN.substring(0, 20) + '...' : 
-    'Not set'
-  ));
+async function showCurrent() {
+  const claudeSettings = await loadClaudeCodeConfig();
+  console.log(chalk.cyan('\n🔧 Claude Code Configuration:'));
+  
+  if (claudeSettings && claudeSettings.env) {
+    console.log(chalk.white('ANTHROPIC_BASE_URL:'), chalk.green(claudeSettings.env.ANTHROPIC_BASE_URL || 'Not set'));
+    console.log(chalk.white('ANTHROPIC_AUTH_TOKEN:'), chalk.green(
+      claudeSettings.env.ANTHROPIC_AUTH_TOKEN ? 
+      claudeSettings.env.ANTHROPIC_AUTH_TOKEN.substring(0, 20) + '...' : 
+      'Not set'
+    ));
+    
+    if (claudeSettings.model) {
+      console.log(chalk.white('Model:'), chalk.green(claudeSettings.model));
+    }
+    
+    // Show privacy settings
+    if (claudeSettings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+      console.log(chalk.white('Disable Nonessential Traffic:'), chalk.green('Yes'));
+    }
+    if (claudeSettings.env.DISABLE_TELEMETRY) {
+      console.log(chalk.white('Disable Telemetry:'), chalk.green('Yes'));
+    }
+  } else {
+    console.log(chalk.gray('No configuration found in Claude Code settings'));
+  }
+  
+  console.log(chalk.gray(`\nSettings file: ${CLAUDE_CODE_SETTINGS_FILE}`));
 }
 
 // List all configurations
@@ -473,7 +529,7 @@ async function main() {
   program
     .name('claude-config')
     .description('Claude Code environment variable configuration switcher')
-    .version('1.3.0');
+    .version('1.2.0');
   
   program
     .argument('[config]', 'Configuration name to switch to')
@@ -484,13 +540,14 @@ async function main() {
     .option('-t, --test', 'Test connectivity for all configurations')
     .option('--no-test', 'Skip connectivity test in interactive mode')
     .option('-q, --quick', 'Quick mode - skip connectivity test (alias for --no-test)')
+    .option('--clear-env', 'Clear system environment variables to avoid override')
     .action(async (config, options) => {
       await initConfig();
       
       if (options.list) {
         await listConfigs();
       } else if (options.current) {
-        showCurrent();
+        await showCurrent();
       } else if (options.interactive) {
         const skipTest = options.noTest || options.quick;
         await interactiveSelect(skipTest);
@@ -500,12 +557,21 @@ async function main() {
         const results = await testAllConfigs();
         showConnectivityResults(results);
       } else if (config) {
-        await switchConfig(config);
+        await switchConfig(config, options);
       } else {
         // Default to interactive menu
         const skipTest = options.noTest || options.quick;
         await interactiveSelect(skipTest);
       }
+    });
+  
+  // Add a separate command for clearing environment variables
+  program
+    .command('clear-env')
+    .description('Clear system environment variables (ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN)')
+    .action(async () => {
+      console.log(chalk.bold.cyan('\n🧹 Clearing Environment Variables\n'));
+      clearBothEnvVars();
     });
   
   program.parse();
