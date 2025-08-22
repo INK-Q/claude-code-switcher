@@ -223,6 +223,35 @@ function setEnvVar(name, value) {
   }
 }
 
+// Display temporary environment variable commands
+function showTempCommands(baseUrl, token) {
+  console.log(chalk.cyan('\n💡 To use immediately in current terminal:'));
+  
+  if (os.platform() === 'win32') {
+    // Windows commands for different terminal types
+    console.log(chalk.white('Command Prompt (CMD):'));
+    console.log(chalk.yellow(`set ANTHROPIC_BASE_URL=${baseUrl}`));
+    console.log(chalk.yellow(`set ANTHROPIC_AUTH_TOKEN=${token}`));
+    
+    console.log(chalk.white('\nPowerShell:'));
+    console.log(chalk.yellow(`$env:ANTHROPIC_BASE_URL="${baseUrl}"`));
+    console.log(chalk.yellow(`$env:ANTHROPIC_AUTH_TOKEN="${token}"`));
+    
+    console.log(chalk.white('\nGit Bash / WSL:'));
+    console.log(chalk.yellow(`export ANTHROPIC_BASE_URL="${baseUrl}"`));
+    console.log(chalk.yellow(`export ANTHROPIC_AUTH_TOKEN="${token}"`));
+  } else {
+    // Unix/Linux/macOS commands
+    console.log(chalk.white('Bash/Zsh:'));
+    console.log(chalk.yellow(`export ANTHROPIC_BASE_URL="${baseUrl}"`));
+    console.log(chalk.yellow(`export ANTHROPIC_AUTH_TOKEN="${token}"`));
+    
+    console.log(chalk.white('\nFish:'));
+    console.log(chalk.yellow(`set -x ANTHROPIC_BASE_URL "${baseUrl}"`));
+    console.log(chalk.yellow(`set -x ANTHROPIC_AUTH_TOKEN "${token}"`));
+  }
+}
+
 // Switch configuration
 async function switchConfig(configName) {
   const configs = await loadConfigs();
@@ -244,6 +273,9 @@ async function switchConfig(configName) {
     console.log(chalk.green('✓ Configuration switched successfully!'));
     console.log(chalk.gray(`BASE_URL: ${config.ANTHROPIC_BASE_URL}`));
     console.log(chalk.gray(`TOKEN: ${config.ANTHROPIC_AUTH_TOKEN.substring(0, 20)}...`));
+    
+    // Show temporary commands for immediate use
+    showTempCommands(config.ANTHROPIC_BASE_URL, config.ANTHROPIC_AUTH_TOKEN);
   } else {
     console.log(chalk.red('✗ Configuration switch partially failed'));
   }
@@ -274,32 +306,56 @@ async function listConfigs() {
 }
 
 // Interactive configuration selection with connectivity test
-async function interactiveSelect() {
-  // Run connectivity test first
-  const testResults = await testAllConfigs();
-  showConnectivityResults(testResults);
+async function interactiveSelect(skipTest = false) {
+  let testResults = null;
+  
+  if (!skipTest) {
+    // Ask user if they want to test connectivity
+    const { shouldTest } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'shouldTest',
+        message: 'Test connectivity before selection?',
+        default: true
+      }
+    ]);
+    
+    if (shouldTest) {
+      testResults = await testAllConfigs();
+      showConnectivityResults(testResults);
+    }
+  }
   
   const configs = await loadConfigs();
+  let choices;
   
-  // Create choices with connectivity status
-  const choices = testResults.map((result) => {
-    const statusIcon = result.success ? '🟢' : '🔴';
-    const latencyText = result.success ? 
-      ` (${result.latency}ms)` : 
-      ` (${result.error})`;
-    
-    return {
-      name: `${statusIcon} ${result.name} - ${result.config.description}${latencyText}`,
-      value: result.name
-    };
-  });
+  if (testResults) {
+    // Create choices with connectivity status
+    choices = testResults.map((result) => {
+      const statusIcon = result.success ? '🟢' : '🔴';
+      const latencyText = result.success ? 
+        ` (${result.latency}ms)` : 
+        ` (${result.error})`;
+      
+      return {
+        name: `${statusIcon} ${result.name} - ${result.config.description}${latencyText}`,
+        value: result.name
+      };
+    });
+  } else {
+    // Create simple choices without connectivity status
+    choices = Object.entries(configs).map(([name, config]) => ({
+      name: `${name} - ${config.description}`,
+      value: name
+    }));
+  }
   
-  // Add separator and test option
+  // Add separator and options
   choices.push(
     new inquirer.Separator(),
     {
-      name: '🔄 Re-test connectivity',
-      value: '__retest__'
+      name: '🔄 Test connectivity',
+      value: '__test__'
     },
     {
       name: '📝 Edit configuration file',
@@ -316,11 +372,11 @@ async function interactiveSelect() {
     }
   ]);
   
-  if (selectedConfig === '__retest__') {
-    return await interactiveSelect(); // Recursive call to re-test
+  if (selectedConfig === '__test__') {
+    return await interactiveSelect(false); // Force show test prompt
   } else if (selectedConfig === '__edit__') {
     await editConfig();
-    return await interactiveSelect(); // Return to menu after editing
+    return await interactiveSelect(skipTest); // Return to menu after editing
   } else {
     await switchConfig(selectedConfig);
   }
@@ -349,7 +405,7 @@ async function main() {
   program
     .name('claude-config')
     .description('Claude Code environment variable configuration switcher')
-    .version('1.0.0');
+    .version('1.1.0');
   
   program
     .argument('[config]', 'Configuration name to switch to')
@@ -358,6 +414,8 @@ async function main() {
     .option('-i, --interactive', 'Interactive configuration selection')
     .option('-e, --edit', 'Edit configuration file')
     .option('-t, --test', 'Test connectivity for all configurations')
+    .option('--no-test', 'Skip connectivity test in interactive mode')
+    .option('-q, --quick', 'Quick mode - skip connectivity test (alias for --no-test)')
     .action(async (config, options) => {
       await initConfig();
       
@@ -366,7 +424,8 @@ async function main() {
       } else if (options.current) {
         showCurrent();
       } else if (options.interactive) {
-        await interactiveSelect();
+        const skipTest = options.noTest || options.quick;
+        await interactiveSelect(skipTest);
       } else if (options.edit) {
         await editConfig();
       } else if (options.test) {
@@ -376,7 +435,8 @@ async function main() {
         await switchConfig(config);
       } else {
         // Default to interactive menu
-        await interactiveSelect();
+        const skipTest = options.noTest || options.quick;
+        await interactiveSelect(skipTest);
       }
     });
   

@@ -1,6 +1,6 @@
 {
   "name": "claude-code-switcher",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A CLI tool for quickly switching Claude Code environment configurations with connectivity testing",
   "main": "index.js",
   "bin": {
