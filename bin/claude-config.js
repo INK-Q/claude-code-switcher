@@ -223,32 +223,100 @@ function setEnvVar(name, value) {
   }
 }
 
-// Display temporary environment variable commands
-function showTempCommands(baseUrl, token) {
-  console.log(chalk.cyan('\n💡 To use immediately in current terminal:'));
+// Execute temporary environment variable commands and show instructions
+async function applyTempCommands(baseUrl, token) {
+  const { execSync } = require('child_process');
+  
+  // Set for current process (immediate effect for current session)
+  process.env.ANTHROPIC_BASE_URL = baseUrl;
+  process.env.ANTHROPIC_AUTH_TOKEN = token;
+  
+  console.log(chalk.cyan('\n💡 Environment variables updated for:'));
+  console.log(chalk.green('✓ Current CLI session (immediate effect)'));
+  
+  // Detect current shell and generate script file for parent terminal
+  const tempDir = os.tmpdir();
+  const timestamp = Date.now();
   
   if (os.platform() === 'win32') {
-    // Windows commands for different terminal types
-    console.log(chalk.white('Command Prompt (CMD):'));
+    // Windows - detect terminal type and create appropriate script
+    const isPS = process.env.PSModulePath; // PowerShell indicator
+    const isCMD = !isPS && process.env.COMSPEC; // CMD indicator
+    
+    if (isPS) {
+      // PowerShell script
+      const psScript = `
+$env:ANTHROPIC_BASE_URL="${baseUrl}"
+$env:ANTHROPIC_AUTH_TOKEN="${token}"
+Write-Host "✓ Environment variables updated for PowerShell" -ForegroundColor Green
+`;
+      const psPath = path.join(tempDir, `claude_env_${timestamp}.ps1`);
+      await fs.writeFile(psPath, psScript);
+      
+      console.log(chalk.green('✓ PowerShell environment update available'));
+      console.log(chalk.gray(`To apply in current terminal, run:`));
+      console.log(chalk.yellow(`& "${psPath}"`));
+      
+    } else {
+      // CMD or other - create batch file
+      const batScript = `@echo off
+set ANTHROPIC_BASE_URL=${baseUrl}
+set ANTHROPIC_AUTH_TOKEN=${token}
+echo ✓ Environment variables updated for CMD
+`;
+      const batPath = path.join(tempDir, `claude_env_${timestamp}.bat`);
+      await fs.writeFile(batPath, batScript);
+      
+      console.log(chalk.green('✓ CMD environment update available'));
+      console.log(chalk.gray(`To apply in current terminal, run:`));
+      console.log(chalk.yellow(`"${batPath}"`));
+    }
+    
+    // Also show manual commands as backup
+    console.log(chalk.cyan('\n📋 Or copy these commands manually:'));
+    console.log(chalk.white('PowerShell:'));
+    console.log(chalk.yellow(`$env:ANTHROPIC_BASE_URL="${baseUrl}"`));
+    console.log(chalk.yellow(`$env:ANTHROPIC_AUTH_TOKEN="${token}"`));
+    console.log(chalk.white('CMD:'));
     console.log(chalk.yellow(`set ANTHROPIC_BASE_URL=${baseUrl}`));
     console.log(chalk.yellow(`set ANTHROPIC_AUTH_TOKEN=${token}`));
     
-    console.log(chalk.white('\nPowerShell:'));
-    console.log(chalk.yellow(`$env:ANTHROPIC_BASE_URL="${baseUrl}"`));
-    console.log(chalk.yellow(`$env:ANTHROPIC_AUTH_TOKEN="${token}"`));
-    
-    console.log(chalk.white('\nGit Bash / WSL:'));
-    console.log(chalk.yellow(`export ANTHROPIC_BASE_URL="${baseUrl}"`));
-    console.log(chalk.yellow(`export ANTHROPIC_AUTH_TOKEN="${token}"`));
   } else {
-    // Unix/Linux/macOS commands
-    console.log(chalk.white('Bash/Zsh:'));
-    console.log(chalk.yellow(`export ANTHROPIC_BASE_URL="${baseUrl}"`));
-    console.log(chalk.yellow(`export ANTHROPIC_AUTH_TOKEN="${token}"`));
+    // Unix/Linux/macOS - create shell script
+    const shellScript = `#!/bin/bash
+export ANTHROPIC_BASE_URL="${baseUrl}"
+export ANTHROPIC_AUTH_TOKEN="${token}"
+echo "✓ Environment variables updated for current shell"
+`;
+    const shellPath = path.join(tempDir, `claude_env_${timestamp}.sh`);
+    await fs.writeFile(shellPath, shellScript);
+    await fs.chmod(shellPath, 0o755); // Make executable
     
-    console.log(chalk.white('\nFish:'));
-    console.log(chalk.yellow(`set -x ANTHROPIC_BASE_URL "${baseUrl}"`));
-    console.log(chalk.yellow(`set -x ANTHROPIC_AUTH_TOKEN "${token}"`));
+    console.log(chalk.green('✓ Shell environment update available'));
+    console.log(chalk.gray(`To apply in current terminal, run:`));
+    console.log(chalk.yellow(`source "${shellPath}"`));
+    
+    // Also show manual commands
+    console.log(chalk.cyan('\n📋 Or copy this command manually:'));
+    console.log(chalk.yellow(`export ANTHROPIC_BASE_URL="${baseUrl}" ANTHROPIC_AUTH_TOKEN="${token}"`));
+  }
+  
+  // Clean up old temp files (older than 1 hour)
+  try {
+    const files = await fs.readdir(tempDir);
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    
+    for (const file of files) {
+      if (file.startsWith('claude_env_') && 
+          (file.endsWith('.ps1') || file.endsWith('.bat') || file.endsWith('.sh'))) {
+        const match = file.match(/claude_env_(\d+)/);
+        if (match && parseInt(match[1]) < oneHourAgo) {
+          await fs.unlink(path.join(tempDir, file)).catch(() => {}); // Ignore errors
+        }
+      }
+    }
+  } catch (error) {
+    // Ignore cleanup errors
   }
 }
 
@@ -274,8 +342,8 @@ async function switchConfig(configName) {
     console.log(chalk.gray(`BASE_URL: ${config.ANTHROPIC_BASE_URL}`));
     console.log(chalk.gray(`TOKEN: ${config.ANTHROPIC_AUTH_TOKEN.substring(0, 20)}...`));
     
-    // Show temporary commands for immediate use
-    showTempCommands(config.ANTHROPIC_BASE_URL, config.ANTHROPIC_AUTH_TOKEN);
+    // Apply temporary commands and show instructions
+    await applyTempCommands(config.ANTHROPIC_BASE_URL, config.ANTHROPIC_AUTH_TOKEN);
   } else {
     console.log(chalk.red('✗ Configuration switch partially failed'));
   }
@@ -405,7 +473,7 @@ async function main() {
   program
     .name('claude-config')
     .description('Claude Code environment variable configuration switcher')
-    .version('1.1.0');
+    .version('1.3.0');
   
   program
     .argument('[config]', 'Configuration name to switch to')
