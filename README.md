@@ -44,8 +44,15 @@ cc custom
 
 ### 命令选项
 ```bash
-# 交互式选择 (默认，包含连通性测试)
+# 交互式选择 (默认，会询问是否测试连通性)
 cc
+
+# 快速模式 - 跳过连通性测试
+cc --quick
+cc -q
+
+# 跳过连通性测试 (程序化使用)
+cc --no-test
 
 # 仅测试所有配置的连通性
 cc --test
@@ -68,10 +75,54 @@ cc --help
 cc -h
 ```
 
+## 💡 临时环境变量命令
+
+每次切换配置后，工具会显示适合当前系统的临时环境变量设置命令，让你无需重启终端即可立即使用：
+
+### Windows 示例
+```
+🔄 Switching to config: custom
+Description: Custom API endpoint
+✓ Configuration switched successfully!
+
+💡 To use immediately in current terminal:
+Command Prompt (CMD):
+set ANTHROPIC_BASE_URL=https://api.example.com
+set ANTHROPIC_AUTH_TOKEN=your-token-here
+
+PowerShell:
+$env:ANTHROPIC_BASE_URL="https://api.example.com"
+$env:ANTHROPIC_AUTH_TOKEN="your-token-here"
+
+Git Bash / WSL:
+export ANTHROPIC_BASE_URL="https://api.example.com"
+export ANTHROPIC_AUTH_TOKEN="your-token-here"
+```
+
+### Unix/Linux/macOS 示例
+```
+💡 To use immediately in current terminal:
+Bash/Zsh:
+export ANTHROPIC_BASE_URL="https://api.example.com"
+export ANTHROPIC_AUTH_TOKEN="your-token-here"
+
+Fish:
+set -x ANTHROPIC_BASE_URL "https://api.example.com"
+set -x ANTHROPIC_AUTH_TOKEN "your-token-here"
+```
+
 ## 🌐 连通性测试功能
 
-### 自动测试
-每次运行 `cc` 时，都会自动测试所有配置的连通性：
+### 可选自动测试
+运行 `cc` 时，会询问是否要测试连通性（默认为是）：
+
+```
+🔧 Claude Code Configuration Switcher
+
+? Test connectivity before selection? (Y/n) 
+```
+
+选择 "Yes" 后进行连通性测试：
 
 ```
 🌐 Testing API Connectivity...
@@ -92,6 +143,33 @@ Testing azure... ✓ 892ms
   2.  azure        Online          892ms  
       Azure OpenAI Service
 ```
+
+### 快速模式
+使用 `--quick` 或 `-q` 参数跳过连通性测试，直接显示配置列表：
+
+```bash
+# 快速模式，无连通性测试
+cc --quick
+
+# 或使用短参数
+cc -q
+```
+
+输出示例：
+```
+🔧 Claude Code Configuration Switcher
+
+? Select configuration to switch to:
+❯ official - Official Anthropic API
+  custom - Custom API endpoint  
+  azure - Azure OpenAI Service
+  ──────────────
+  🔄 Test connectivity
+  📝 Edit configuration file
+```
+
+### 手动测试连通性
+在交互式菜单中，你可以选择 "🔄 Test connectivity" 来手动测试连通性。
 
 ### 智能排序
 - 🟢 **在线服务** 按延迟从低到高排序
@@ -320,6 +398,21 @@ TOKEN: sk-ant-api03-xxx...
 - [npm 包管理器](https://www.npmjs.com/)
 
 ## 📝 更新日志
+
+### v1.2.0 - 临时命令和可选连通性测试
+- 💡 新增临时环境变量命令显示
+  - Windows支持：CMD、PowerShell、Git Bash/WSL
+  - Unix/Linux支持：Bash/Zsh、Fish
+  - 无需重启终端即可立即使用新配置
+- ⚡ 可选连通性测试功能
+  - 启动时询问是否测试连通性（默认：是）
+  - 添加 `--quick/-q` 快速模式跳过测试
+  - 添加 `--no-test` 程序化跳过测试
+  - 菜单中可手动触发连通性测试
+- 🎨 改善用户体验
+  - 更灵活的连通性测试工作流
+  - 更快的启动选项
+  - 更好的终端类型检测
 
 ### v1.1.0 - 连通性测试功能
 - ✨ 新增自动连通性测试
